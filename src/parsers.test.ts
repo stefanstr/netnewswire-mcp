@@ -247,3 +247,16 @@ describe("named entities (fork)", () => {
     expect(htmlToText("It&rsquo;s &ldquo;fine&rdquo; &ndash; really&hellip;")).toBe("It\u2019s \u201cfine\u201d \u2013 really\u2026");
   });
 });
+
+describe("double-escaped HTML and entity names (fork)", () => {
+  it("strips tags that only appear after decoding", () => {
+    expect(cleanSummary("&lt;img src=&quot;x.png&quot;&gt;&lt;p&gt;Real text&lt;/p&gt;", 100)).toBe("Real text");
+  });
+
+  it("decodes entities in feed names and titles", () => {
+    const raw = rec("ARTICLE:1", "Fish &amp; Chips", "u", "f", "Methods &amp; Madness", "false", "false", "1", "1", "");
+    const [a] = parseArticles(raw, NOW);
+    expect(a!.title).toBe("Fish & Chips");
+    expect(a!.feed).toBe("Methods & Madness");
+  });
+});

@@ -61,7 +61,7 @@ export function parseListFeeds(raw: string): AccountInfo[] {
     } else if (rec.startsWith("FEED:") && currentAccount) {
       const parts = rec.substring(5).split(FIELD_SEP);
       const feed: FeedInfo = {
-        name: parts[0] ?? "",
+        name: decodeEntities(parts[0] ?? ""),
         url: parts[1] ?? "",
         homePageUrl: parts[2] ?? "",
       };
@@ -95,10 +95,10 @@ export function parseArticles(raw: string, now: Date = new Date()): ArticleSumma
     const p = rec.substring(8).split(FIELD_SEP);
     articles.push({
       id: p[0] ?? "",
-      title: p[1] ?? "",
+      title: decodeEntities(p[1] ?? ""),
       url: p[2] ?? "",
       feedUrl: p[3] ?? "",
-      feed: feedDisplayName(p[4] ?? "", p[3] ?? ""),
+      feed: feedDisplayName(decodeEntities(p[4] ?? ""), p[3] ?? ""),
       read: p[5] === "true",
       starred: p[6] === "true",
       publishedAt: minutesAgoToIso(p[7], now),
@@ -155,10 +155,10 @@ export function parseFullArticle(raw: string, now: Date = new Date()): FullArtic
   }
 
   return {
-    title: fields["TITLE"] ?? "",
+    title: decodeEntities(fields["TITLE"] ?? ""),
     url: fields["URL"] ?? "",
     feedUrl: fields["FEEDURL"] ?? "",
-    feed: feedDisplayName(fields["FEED"] ?? "", fields["FEEDURL"] ?? ""),
+    feed: feedDisplayName(decodeEntities(fields["FEED"] ?? ""), fields["FEEDURL"] ?? ""),
     publishedAt: minutesAgoToIso(fields["PUBMIN"], now),
     read: fields["READ"] === "true",
     starred: fields["STARRED"] === "true",
@@ -215,21 +215,32 @@ const ENTITIES: Record<string, string> = {
   szlig: "\u00df",
 };
 
-/** Convert HTML to plain text, keeping paragraph breaks. */
-export function htmlToText(input: string | undefined): string {
-  if (!input) return "";
+/** Decode numeric and common named HTML entities. */
+export function decodeEntities(input: string): string {
+  return input.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
+    if (code[0] === "#") {
+      const n = code[1]?.toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+      return Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+    }
+    return ENTITIES[code.toLowerCase()] ?? m;
+  });
+}
+
+function stripTags(input: string): string {
   return input
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|h[1-6]|li|blockquote|pre|tr)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
-      if (code[0] === "#") {
-        const n = code[1]?.toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
-        return Number.isFinite(n) ? String.fromCodePoint(n) : m;
-      }
-      return ENTITIES[code.toLowerCase()] ?? m;
-    })
+    .replace(/<[^>]+>/g, " ");
+}
+
+/** Convert HTML to plain text, keeping paragraph breaks. */
+export function htmlToText(input: string | undefined): string {
+  if (!input) return "";
+  let text = decodeEntities(stripTags(input));
+  // Some feeds escape their HTML twice; decoding then reveals real tags.
+  if (/<\/?[a-z][\s\S]*?>/i.test(text)) text = decodeEntities(stripTags(text));
+  return text
     .replace(/[ \t\f\v\u00a0]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
