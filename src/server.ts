@@ -1,13 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { runAppleScript, isNetNewsWireRunning } from "./applescript/bridge.js";
+import { runAppleScript, isNetNewsWireRunning, launchNetNewsWire } from "./applescript/bridge.js";
 import { scripts } from "./applescript/scripts.js";
-import { parseListFeeds, parseArticles, parseFullArticle } from "./parsers.js";
+import { parseListFeeds, parseArticles, parseFullArticle, cleanSummary } from "./parsers.js";
+import type { ArticleSummary } from "./parsers.js";
 
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "NetNewsWire",
-    version: "0.1.4-ro.1",
+    version: "0.1.4-ro.2",
   });
 
   registerTools(server);
@@ -27,16 +28,17 @@ function registerTools(server: McpServer): void {
     },
     async ({ account }) => {
       await ensureRunning();
-      const raw = await runAppleScript(scripts.listFeeds(account));
+      const raw = await runAppleScript(scripts.listFeeds(account), { timeoutMs: 300_000 });
       const result = parseListFeeds(raw);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }
   );
 
   // ── get_articles ────────────────────────────────────────────────
   server.tool(
     "get_articles",
-    "Fetch articles from NetNewsWire. Returns article metadata (title, URL, date, read/starred status). Use read_article to get full content.",
+    "Fetch articles from NetNewsWire, newest first. Returns metadata (title, URL, feed URL, ISO dates, read/starred status) and a short plain-text summary. " +
+      "If `truncated` is true, more articles matched than `limit`; narrow by folder, feed or sinceDays. Use read_article with id and feedUrl for full content.",
     {
       feedUrl: z
         .string()
@@ -63,28 +65,41 @@ function registerTools(server: McpServer): void {
         .describe("Only return articles that arrived in NetNewsWire within the last N days"),
       limit: z
         .number()
+        .int()
         .min(1)
         .max(500)
         .default(50)
         .describe("Maximum number of articles to return (default 50, max 500)"),
+      summaryChars: z
+        .number()
+        .int()
+        .min(0)
+        .max(2000)
+        .default(400)
+        .describe("Length of the plain-text summary per article (default 400, 0 to omit)"),
     },
-    async ({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit }) => {
+    async ({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit, summaryChars }) => {
       await ensureRunning();
       // Sweeping every feed of a large library can exceed the bridge's 60s
       // default; scripts.getArticles wraps its work in `with timeout of 300
-      // seconds`, so the subprocess budget must match (fork change).
+      // seconds`, so the subprocess budget must match. One extra record is
+      // requested so truncation can be reported instead of hidden.
+      const now = new Date();
       const raw = await runAppleScript(
-        scripts.getArticles({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit }),
+        scripts.getArticles({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit: limit + 1 }),
         { timeoutMs: 300_000 }
       );
-      const articles = parseArticles(raw);
+      const parsed = parseArticles(raw, now);
+      const truncated = parsed.length > limit;
+      const articles = sortNewestFirst(parsed.slice(0, limit)).map((a) => ({
+        ...a,
+        summary: cleanSummary(a.summary, summaryChars),
+      }));
       return {
         content: [
           {
             type: "text",
-            text: articles.length
-              ? JSON.stringify(articles, null, 2)
-              : "No articles found matching the criteria.",
+            text: JSON.stringify({ count: articles.length, truncated, articles }),
           },
         ],
       };
@@ -94,11 +109,16 @@ function registerTools(server: McpServer): void {
   // ── read_article ────────────────────────────────────────────────
   server.tool(
     "read_article",
-    "Get the full content of a specific article by its ID. Returns title, HTML content, plain text, summary, and metadata.",
+    "Get the full content of a specific article by its ID. Returns title, HTML content, plain text, summary, and metadata. " +
+      "Article IDs are only unique within a feed, so pass the feedUrl returned by get_articles.",
     {
       articleId: z.string().describe("The article ID to read"),
+      feedUrl: z
+        .string()
+        .optional()
+        .describe("Feed URL of the article (from get_articles); strongly recommended"),
     },
-    async ({ articleId }) => {
+    async ({ articleId, feedUrl }) => {
       await ensureRunning();
       // Cold-cache or missing-ID lookups walk every feed in every
       // account, which can exceed the bridge's default 60s subprocess
@@ -107,7 +127,7 @@ function registerTools(server: McpServer): void {
       // subprocess budget must match — otherwise Node kills osascript
       // before the AppleScript-side -1712 re-raise can take effect.
       const raw = await runAppleScript(
-        scripts.readArticle(articleId),
+        scripts.readArticle(articleId, feedUrl),
         { timeoutMs: 300_000 }
       );
       if (raw.startsWith("ERROR:")) {
@@ -117,7 +137,7 @@ function registerTools(server: McpServer): void {
         };
       }
       const article = parseFullArticle(raw);
-      return { content: [{ type: "text", text: JSON.stringify(article, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(article) }] };
     }
   );
 
@@ -147,13 +167,13 @@ function registerTools(server: McpServer): void {
         scripts.searchArticles(query, limit),
         { timeoutMs: 300_000 }
       );
-      const articles = parseArticles(raw);
+      const articles = sortNewestFirst(parseArticles(raw));
       return {
         content: [
           {
             type: "text",
             text: articles.length
-              ? JSON.stringify(articles, null, 2)
+              ? JSON.stringify(articles)
               : `No articles found matching "${query}".`,
           },
         ],
@@ -164,12 +184,33 @@ function registerTools(server: McpServer): void {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/**
+ * Make sure NetNewsWire runs. Fork change: launch it if needed instead of
+ * failing, so unattended (scheduled) runs work when the app was quit.
+ * Launching does not change any data in NetNewsWire.
+ */
 async function ensureRunning(): Promise<void> {
-  const running = await isNetNewsWireRunning();
-  if (!running) {
-    throw new Error(
-      "NetNewsWire is not running. Please launch NetNewsWire and try again."
-    );
+  if (await isNetNewsWireRunning()) return;
+  await launchNetNewsWire();
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000);
+    if (await isNetNewsWireRunning()) {
+      // Give the app a moment to load its accounts before scripting it.
+      await sleep(5000);
+      return;
+    }
   }
+  throw new Error(
+    "NetNewsWire is not running and could not be launched. Please open it and try again."
+  );
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Sort by publication date, newest first; undated articles go last. */
+export function sortNewestFirst(articles: ArticleSummary[]): ArticleSummary[] {
+  const key = (a: ArticleSummary) => a.publishedAt || a.arrivedAt || "";
+  return [...articles].sort((x, y) => key(y).localeCompare(key(x)));
+}

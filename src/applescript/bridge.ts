@@ -54,3 +54,14 @@ export async function isNetNewsWireRunning(): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Launch NetNewsWire without bringing it to the front. Fork addition used
+ * by the server when the app is not running. Launching is not a write: it
+ * changes no read/starred state or subscriptions.
+ */
+export async function launchNetNewsWire(): Promise<void> {
+  await execFileAsync("osascript", ["-e", 'tell application "NetNewsWire" to launch'], {
+    timeout: 30_000,
+  });
+}

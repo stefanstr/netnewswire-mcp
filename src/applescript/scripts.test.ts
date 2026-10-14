@@ -85,8 +85,9 @@ describe("scripts.getArticles", () => {
 
   it("filters by arrived date when sinceDays is set", () => {
     const s = scripts.getArticles({ unreadOnly: true, sinceDays: 7 });
-    expect(s).toContain("set cutoffDate to (current date) - (7 * days)");
-    expect(s).toContain("if aArrived ≥ cutoffDate then");
+    expect(s).toContain("set cutoffDate to nowDate - (7 * days)");
+    expect(s).toContain("if (arrived date of a) < cutoffDate then set aKeep to false");
+    expect(s).toContain("if aKeep then");
     expect(s).toContain("get every article of nthFeed where read is false");
   });
 
@@ -224,7 +225,7 @@ describe("scripts.readArticle", () => {
   // ── Output contract for parseFullArticle ─────────────────────────────
   it("emits all field prefixes the parseFullArticle parser expects", () => {
     const s = scripts.readArticle("x");
-    for (const prefix of ["TITLE:", "URL:", "FEED:", "DATE:", "READ:", "STARRED:", "AUTHORS:", "SUMMARY:", "HTML:", "TEXT:"]) {
+    for (const prefix of ["TITLE:", "URL:", "FEEDURL:", "FEED:", "PUBMIN:", "READ:", "STARRED:", "AUTHORS:", "SUMMARY:", "HTML:", "TEXT:"]) {
       expect(s).toContain(`"${prefix}"`);
     }
   });
@@ -359,15 +360,68 @@ describe("scripts.searchArticles", () => {
   });
 });
 
-describe("scripts.getCurrentArticle", () => {
-  it("guards against `missing value` when no article is selected", () => {
-    const s = scripts.getCurrentArticle();
-    expect(s).toContain("if a is missing value then");
-    expect(s).toContain('return "ERROR:No article selected"');
+describe("wire format (fork)", () => {
+  const all = [
+    scripts.listFeeds(),
+    scripts.getArticles({ unreadOnly: true, sinceDays: 7 }),
+    scripts.readArticle("x"),
+    scripts.searchArticles("q"),
+  ];
+
+  it("defines ASCII 31/30 separators in every script", () => {
+    for (const s of all) {
+      expect(s).toContain("set US to (character id 31)");
+      expect(s).toContain("set RS to (character id 30)");
+    }
   });
 
-  it("references `current article` of the application", () => {
-    const s = scripts.getCurrentArticle();
-    expect(s).toContain("set a to current article");
+  it("no longer uses the pipe character as a field separator", () => {
+    for (const s of all) {
+      expect(s).not.toContain('& "|" &');
+    }
+  });
+
+  it("never converts dates with `as string` (locale-dependent)", () => {
+    for (const s of all) {
+      expect(s).not.toMatch(/(published|arrived) date of a as string/);
+      expect(s).not.toMatch(/(published|arrived) date of a\) as string/);
+    }
+  });
+
+  it("sends dates as whole minutes before now", () => {
+    const s = scripts.getArticles({});
+    expect(s).toContain("((nowDate - (published date of a)) div 60) as string");
+    expect(s).toContain("((nowDate - (arrived date of a)) div 60) as string");
+  });
+
+  it("includes the feed URL in article records", () => {
+    expect(scripts.getArticles({})).toContain("set aFeedUrl to url of feed of a");
+    expect(scripts.searchArticles("q")).toContain("set aFeedUrl to url of feed of a");
+  });
+
+  it("caps summaries inside AppleScript", () => {
+    expect(scripts.getArticles({})).toContain("text 1 thru 2000 of aSummary");
+  });
+
+  it("balances try/end try and if/end if in every script", () => {
+    for (const s of all) {
+      const tries = (s.match(/^\s*try$/gm) ?? []).length;
+      const endTries = (s.match(/^\s*end try$/gm) ?? []).length;
+      expect(tries).toBe(endTries);
+      const ifs = (s.match(/^\s*if .* then$/gm) ?? []).length;
+      const endIfs = (s.match(/^\s*end if$/gm) ?? []).length;
+      expect(ifs).toBe(endIfs);
+    }
+  });
+});
+
+describe("scripts.readArticle feed scoping (fork)", () => {
+  it("scopes the lookup to one feed when feedUrl is given", () => {
+    const s = scripts.readArticle("1", "https://a.example/feed");
+    expect(s).toContain('if url of nthFeed is "https://a.example/feed" then');
+  });
+
+  it("searches every feed when feedUrl is absent", () => {
+    expect(scripts.readArticle("1")).not.toContain("if url of nthFeed is");
   });
 });

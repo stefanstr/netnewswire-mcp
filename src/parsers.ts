@@ -1,7 +1,13 @@
 /**
  * Parsers for AppleScript output from NetNewsWire.
- * Each parser converts pipe-delimited text into structured objects.
+ *
+ * Fork change: records are separated by ASCII 30 and fields by ASCII 31
+ * (see scripts.ts), so titles and summaries may contain "|" and newlines.
+ * Dates arrive as whole minutes before the moment the script ran and are
+ * converted to ISO 8601 here.
  */
+
+import { FIELD_SEP, RECORD_SEP } from "./applescript/scripts.js";
 
 export interface FeedInfo {
   name: string;
@@ -21,14 +27,26 @@ export interface AccountInfo {
   folders: FolderInfo[];
 }
 
+function records(raw: string): string[] {
+  return raw.split(RECORD_SEP).map((r) => r.replace(/^\s+/, "")).filter((r) => r.length > 0);
+}
+
+/** Convert "minutes before now" to ISO 8601; empty or invalid gives "". */
+export function minutesAgoToIso(value: string | undefined, now: Date = new Date()): string {
+  if (value === undefined) return "";
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) return "";
+  return new Date(now.getTime() - Number(trimmed) * 60_000).toISOString();
+}
+
 export function parseListFeeds(raw: string): AccountInfo[] {
   const accounts: AccountInfo[] = [];
   let currentAccount: AccountInfo | null = null;
   let currentFolder: FolderInfo | null = null;
 
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("ACCOUNT:")) {
-      const parts = line.substring(8).split("|");
+  for (const rec of records(raw)) {
+    if (rec.startsWith("ACCOUNT:")) {
+      const parts = rec.substring(8).split(FIELD_SEP);
       currentAccount = {
         name: parts[0] ?? "",
         active: parts[1] === "true",
@@ -37,11 +55,11 @@ export function parseListFeeds(raw: string): AccountInfo[] {
       };
       currentFolder = null;
       accounts.push(currentAccount);
-    } else if (line.startsWith("FOLDER:") && currentAccount) {
-      currentFolder = { name: line.substring(7), feeds: [] };
+    } else if (rec.startsWith("FOLDER:") && currentAccount) {
+      currentFolder = { name: rec.substring(7), feeds: [] };
       currentAccount.folders.push(currentFolder);
-    } else if (line.startsWith("FEED:") && currentAccount) {
-      const parts = line.substring(5).split("|");
+    } else if (rec.startsWith("FEED:") && currentAccount) {
+      const parts = rec.substring(5).split(FIELD_SEP);
       const feed: FeedInfo = {
         name: parts[0] ?? "",
         url: parts[1] ?? "",
@@ -61,27 +79,33 @@ export interface ArticleSummary {
   id: string;
   title: string;
   url: string;
+  feedUrl: string;
+  feed: string;
   read: boolean;
   starred: boolean;
-  datePublished: string;
-  feed: string;
+  publishedAt: string;
+  arrivedAt: string;
   summary?: string;
 }
 
-export function parseArticles(raw: string): ArticleSummary[] {
+export function parseArticles(raw: string, now: Date = new Date()): ArticleSummary[] {
   const articles: ArticleSummary[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.startsWith("ARTICLE:")) continue;
-    const parts = line.substring(8).split("|");
+  for (const rec of records(raw)) {
+    if (!rec.startsWith("ARTICLE:")) continue;
+    const p = rec.substring(8).split(FIELD_SEP);
     articles.push({
-      id: parts[0] ?? "",
-      title: parts[1] ?? "",
-      url: parts[2] ?? "",
-      read: parts[3] === "true",
-      starred: parts[4] === "true",
-      datePublished: parts[5] ?? "",
-      feed: parts[6] ?? "",
-      summary: parts[7] || undefined,
+      id: p[0] ?? "",
+      title: p[1] ?? "",
+      url: p[2] ?? "",
+      feedUrl: p[3] ?? "",
+      feed: p[4] ?? "",
+      read: p[5] === "true",
+      starred: p[6] === "true",
+      publishedAt: minutesAgoToIso(p[7], now),
+      arrivedAt: minutesAgoToIso(p[8], now),
+      // The summary is the last field; rejoin in case it contained a stray
+      // separator character.
+      summary: p.slice(9).join(FIELD_SEP) || undefined,
     });
   }
   return articles;
@@ -90,8 +114,9 @@ export function parseArticles(raw: string): ArticleSummary[] {
 export interface FullArticle {
   title: string;
   url: string;
+  feedUrl: string;
   feed: string;
-  datePublished: string;
+  publishedAt: string;
   read: boolean;
   starred: boolean;
   authors: string;
@@ -100,37 +125,77 @@ export interface FullArticle {
   text: string;
 }
 
-export function parseFullArticle(raw: string): FullArticle {
+const FULL_KEYS = [
+  "TITLE",
+  "URL",
+  "FEEDURL",
+  "FEED",
+  "PUBMIN",
+  "READ",
+  "STARRED",
+  "AUTHORS",
+  "SUMMARY",
+  "HTML",
+  "TEXT",
+] as const;
+
+export function parseFullArticle(raw: string, now: Date = new Date()): FullArticle {
   const fields: Record<string, string> = {};
   let currentKey = "";
-  let currentValue = "";
-
-  for (const line of raw.split("\n")) {
-    const match = line.match(/^(TITLE|URL|FEED|DATE|READ|STARRED|AUTHORS|SUMMARY|HTML|TEXT):(.*)/);
-    if (match) {
-      if (currentKey) {
-        fields[currentKey] = currentValue;
-      }
-      currentKey = match[1]!;
-      currentValue = match[2]!;
+  for (const part of raw.split(FIELD_SEP)) {
+    const colon = part.indexOf(":");
+    const key = colon > 0 ? part.substring(0, colon) : "";
+    if ((FULL_KEYS as readonly string[]).includes(key) && !(key in fields)) {
+      currentKey = key;
+      fields[key] = part.substring(colon + 1);
     } else if (currentKey) {
-      currentValue += "\n" + line;
+      // A stray separator inside a value: keep the text with the field.
+      fields[currentKey] += FIELD_SEP + part;
     }
-  }
-  if (currentKey) {
-    fields[currentKey] = currentValue;
   }
 
   return {
     title: fields["TITLE"] ?? "",
     url: fields["URL"] ?? "",
+    feedUrl: fields["FEEDURL"] ?? "",
     feed: fields["FEED"] ?? "",
-    datePublished: fields["DATE"] ?? "",
+    publishedAt: minutesAgoToIso(fields["PUBMIN"], now),
     read: fields["READ"] === "true",
     starred: fields["STARRED"] === "true",
-    authors: fields["AUTHORS"] ?? "",
+    authors: (fields["AUTHORS"] ?? "").replace(/,\s*$/, ""),
     summary: fields["SUMMARY"] ?? "",
     html: fields["HTML"] ?? "",
     text: fields["TEXT"] ?? "",
   };
+}
+
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+/** Strip HTML, decode common entities, collapse whitespace, cap length. */
+export function cleanSummary(input: string | undefined, maxChars: number): string | undefined {
+  if (!input || maxChars <= 0) return undefined;
+  let text = input
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
+      if (code[0] === "#") {
+        const n = code[1]?.toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+        return Number.isFinite(n) ? String.fromCodePoint(n) : m;
+      }
+      return ENTITIES[code.toLowerCase()] ?? m;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return undefined;
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars).replace(/\s+\S*$/, "") + "…";
+  }
+  return text;
 }
