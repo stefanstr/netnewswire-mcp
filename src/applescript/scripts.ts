@@ -35,6 +35,23 @@ const PROLOGUE = `
 /** Longest summary passed back from AppleScript; the server trims further. */
 const SUMMARY_CAP = 2000;
 
+/**
+ * Top-level AppleScript handlers (must sit outside the `tell` block and are
+ * called with `my`). Bulk property lists contain `missing value` where a
+ * feed omits a field.
+ */
+const HANDLERS = `
+on txt(v)
+  if v is missing value then return ""
+  return v as text
+end txt
+
+on mins(d, nowDate)
+  if d is missing value then return ""
+  return ((nowDate - d) div 60) as string
+end mins
+`;
+
 /** Codes that must not be swallowed by per-feed `try` blocks. */
 const RERAISE = `
         on error errMsg number errNum
@@ -133,13 +150,23 @@ end tell`;
   /**
    * Get articles filtered by various criteria.
    *
-   * read/starred filters are pushed into NetNewsWire with a `where`
-   * clause. The `sinceDays` filter is applied inside the loop, because
-   * date comparisons in NNW's whose clauses are untested.
+   * Performance (fork rewrite): the original issued roughly ten Apple
+   * Events per article, which on a library with ~1600 unread articles
+   * took well over a minute. This version asks NetNewsWire for each
+   * property of all matching articles of a feed at once (one Apple Event
+   * per property per feed) and builds the records locally.
+   *
+   * read/starred filters are pushed into NetNewsWire with a `whose`
+   * clause. The `sinceDays` filter is applied locally on the publication
+   * date, falling back to the arrival date when a feed gives none. The
+   * arrival date alone is unreliable: a re-sync stamps old articles with
+   * a fresh arrival date.
+   *
+   * When `withText` is set, the summary is taken from `summary`, or from
+   * `contents` when the feed provides no summary (common in NNW).
    *
    * `limit` is the number of records the script may emit. The server asks
-   * for one more than it returns, so it can tell the caller the result was
-   * truncated instead of silently dropping the remaining feeds.
+   * for one more than it returns, so it can report truncation.
    */
   getArticles: (opts: {
     feedUrl?: string;
@@ -148,39 +175,69 @@ end tell`;
     starredOnly?: boolean;
     sinceDays?: number;
     limit?: number;
+    withText?: boolean;
   }) => {
     const limit = opts.limit ?? 50;
     const sinceDays =
       opts.sinceDays && opts.sinceDays > 0 ? Math.floor(opts.sinceDays) : 0;
+    const withText = opts.withText ?? true;
 
     const whereClause = opts.unreadOnly
-      ? " where read is false"
+      ? " whose read is false"
       : opts.starredOnly
-        ? " where starred is true"
+        ? " whose starred is true"
         : "";
 
-    // A missing date must not throw inside the per-feed `try`, or the rest
-    // of that feed would be skipped; articles without a date are kept.
-    const dateOpen = sinceDays
+    const textFetch = withText
       ? `
-          set aKeep to true
-          try
-            if (arrived date of a) < cutoffDate then set aKeep to false
-          end try
-          if aKeep then`
+            set lSum to summary of artRef
+            set lCont to contents of artRef`
       : "";
-    const dateClose = sinceDays
+
+    const textValue = withText
       ? `
-          end if`
+                set aSum to my txt(item i of lSum)
+                if aSum is "" then set aSum to my txt(item i of lCont)
+                if (length of aSum) > ${SUMMARY_CAP} then set aSum to text 1 thru ${SUMMARY_CAP} of aSum`
+      : `
+                set aSum to ""`;
+
+    const dateCheck = sinceDays
+      ? `
+              set d to item i of lPub
+              if d is missing value then set d to item i of lArr
+              if d is not missing value then
+                if d < cutoffDate then set keep to false
+              end if`
       : "";
 
     const articleBlock = `
         try
-        set matchedArticles to (get every article of nthFeed${whereClause})
-        repeat with a in matchedArticles
-          if articleCount ≥ maxArticles then exit repeat${dateOpen}${articleRecord(true)}
-          set articleCount to articleCount + 1${dateClose}
-        end repeat${RERAISE}
+          set artRef to a reference to (every article of nthFeed${whereClause})
+          set n to count of artRef
+          if n > 0 then
+            set feedName to name of nthFeed
+            set feedUrl to url of nthFeed
+            set lIds to id of artRef
+            set lTitles to title of artRef
+            set lUrls to url of artRef
+            set lPub to published date of artRef
+            set lArr to arrived date of artRef
+            set lRead to read of artRef
+            set lStar to starred of artRef${textFetch}
+            -- The lists come from separate Apple Events; skip the feed if
+            -- it changed in between and the lists no longer line up.
+            set n to count of lIds
+            if (count of lTitles) is not n or (count of lPub) is not n or (count of lStar) is not n then set n to 0
+            repeat with i from 1 to n
+              if articleCount ≥ maxArticles then exit repeat
+              set keep to true${dateCheck}
+              if keep then${textValue}
+                set output to output & "ARTICLE:" & my txt(item i of lIds) & US & my txt(item i of lTitles) & US & my txt(item i of lUrls) & US & feedUrl & US & feedName & US & (item i of lRead) & US & (item i of lStar) & US & my mins(item i of lPub, nowDate) & US & my mins(item i of lArr, nowDate) & US & aSum & RS
+                set articleCount to articleCount + 1
+              end if
+            end repeat
+          end if${RERAISE}
         end try`;
 
     let feedIteration: string;
@@ -223,7 +280,7 @@ ${articleBlock}
   set cutoffDate to nowDate - (${sinceDays} * days)`
       : "";
 
-    return `
+    return `${HANDLERS}
 tell application "NetNewsWire"${PROLOGUE}
   with timeout of 300 seconds
   set output to ""

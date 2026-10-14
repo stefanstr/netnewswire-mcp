@@ -1,6 +1,6 @@
 {
   "name": "netnewswire-mcp-readonly",
-  "version": "0.1.4-ro.2",
+  "version": "0.1.4-ro.3",
   "description": "Read-only fork of the NetNewsWire MCP server",
   "type": "module",
   "main": "dist/index.js",

@@ -39,12 +39,12 @@ describe("scripts.listFeeds", () => {
 describe("scripts.getArticles", () => {
   it("filters at the NetNewsWire level when unreadOnly is set", () => {
     const s = scripts.getArticles({ unreadOnly: true });
-    expect(s).toContain("get every article of nthFeed where read is false");
+    expect(s).toContain("set artRef to a reference to (every article of nthFeed whose read is false)");
   });
 
   it("filters at the NetNewsWire level when starredOnly is set", () => {
     const s = scripts.getArticles({ starredOnly: true });
-    expect(s).toContain("get every article of nthFeed where starred is true");
+    expect(s).toContain("set artRef to a reference to (every article of nthFeed whose starred is true)");
   });
 
   it("scopes by feed URL when feedUrl is given", () => {
@@ -86,9 +86,9 @@ describe("scripts.getArticles", () => {
   it("filters by arrived date when sinceDays is set", () => {
     const s = scripts.getArticles({ unreadOnly: true, sinceDays: 7 });
     expect(s).toContain("set cutoffDate to nowDate - (7 * days)");
-    expect(s).toContain("if (arrived date of a) < cutoffDate then set aKeep to false");
-    expect(s).toContain("if aKeep then");
-    expect(s).toContain("get every article of nthFeed where read is false");
+    expect(s).toContain("set d to item i of lPub");
+    expect(s).toContain("if d is missing value then set d to item i of lArr");
+    expect(s).toContain("if d < cutoffDate then set keep to false");
   });
 
   it("emits no date filter when sinceDays is absent", () => {
@@ -389,18 +389,18 @@ describe("wire format (fork)", () => {
   });
 
   it("sends dates as whole minutes before now", () => {
-    const s = scripts.getArticles({});
-    expect(s).toContain("((nowDate - (published date of a)) div 60) as string");
-    expect(s).toContain("((nowDate - (arrived date of a)) div 60) as string");
+    expect(scripts.getArticles({})).toContain("return ((nowDate - d) div 60) as string");
+    expect(scripts.getArticles({})).toContain("my mins(item i of lPub, nowDate)");
+    expect(scripts.searchArticles("q")).toContain("((nowDate - (published date of a)) div 60) as string");
   });
 
   it("includes the feed URL in article records", () => {
-    expect(scripts.getArticles({})).toContain("set aFeedUrl to url of feed of a");
+    expect(scripts.getArticles({})).toContain("set feedUrl to url of nthFeed");
     expect(scripts.searchArticles("q")).toContain("set aFeedUrl to url of feed of a");
   });
 
   it("caps summaries inside AppleScript", () => {
-    expect(scripts.getArticles({})).toContain("text 1 thru 2000 of aSummary");
+    expect(scripts.getArticles({})).toContain("text 1 thru 2000 of aSum");
   });
 
   it("balances try/end try and if/end if in every script", () => {
@@ -423,5 +423,43 @@ describe("scripts.readArticle feed scoping (fork)", () => {
 
   it("searches every feed when feedUrl is absent", () => {
     expect(scripts.readArticle("1")).not.toContain("if url of nthFeed is");
+  });
+});
+
+describe("scripts.getArticles bulk fetch (fork)", () => {
+  it("fetches each property once per feed instead of once per article", () => {
+    const s = scripts.getArticles({ unreadOnly: true, sinceDays: 7 });
+    for (const prop of ["id", "title", "url", "published date", "arrived date", "read", "starred"]) {
+      expect(s).toContain(`of artRef`);
+      expect(s).toMatch(new RegExp(`set l\\w+ to ${prop} of artRef`));
+    }
+    expect(s).not.toContain("repeat with a in");
+  });
+
+  it("falls back to contents when the feed has no summary", () => {
+    const s = scripts.getArticles({});
+    expect(s).toContain("set lCont to contents of artRef");
+    expect(s).toContain('if aSum is "" then set aSum to my txt(item i of lCont)');
+  });
+
+  it("skips summary and contents entirely when withText is false", () => {
+    const s = scripts.getArticles({ withText: false });
+    expect(s).not.toContain("summary of artRef");
+    expect(s).not.toContain("contents of artRef");
+  });
+
+  it("filters by publication date with arrival date as fallback", () => {
+    const s = scripts.getArticles({ sinceDays: 7 });
+    expect(s.indexOf("set d to item i of lPub")).toBeLessThan(s.indexOf("set d to item i of lArr"));
+  });
+
+  it("defines the txt/mins handlers outside the tell block", () => {
+    const s = scripts.getArticles({});
+    expect(s.indexOf("on txt(v)")).toBeLessThan(s.indexOf('tell application "NetNewsWire"'));
+    expect(s.indexOf("end mins")).toBeLessThan(s.indexOf('tell application "NetNewsWire"'));
+  });
+
+  it("guards against lists that no longer line up", () => {
+    expect(scripts.getArticles({})).toContain("then set n to 0");
   });
 });

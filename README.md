@@ -9,8 +9,11 @@ Fork of [jellllly420/netnewswire-mcp](https://github.com/jellllly420/netnewswire
 - **Locale-independent dates:** AppleScript sends minutes before now; the server returns ISO 8601 `publishedAt` and `arrivedAt`.
 - **Feed-scoped article IDs:** results include `feedUrl`, and `read_article` accepts it, because NetNewsWire article IDs are only unique within a feed.
 - **Large results:** `get_articles` returns newest first, reports `truncated` instead of silently dropping feeds, and returns plain-text summaries capped by `summaryChars` (default 400) as compact JSON.
+- **Bulk fetch:** `get_articles` asks NetNewsWire for each property of all matching articles of a feed in one Apple Event, instead of about ten Apple Events per article. The original needed well over a minute for ~1600 unread articles. `sinceDays` filters on the publication date (arrival date as fallback), because a re-sync stamps old articles with a fresh arrival date. Summaries fall back to the article text when a feed has no summary.
 - **Unattended use:** the server launches NetNewsWire if it is not running (launching changes no data).
 - **No System Events:** the "is NetNewsWire running" check uses `application "NetNewsWire" is running`, so the only Automation permission needed is control of NetNewsWire.
+
+Note: when the server is reached through a bridge with its own timeout (Claude's remote-device link waits 60 s), split large sweeps by `folderName`.
 
 The only macOS permission required is Automation → NetNewsWire for the process that runs the server (Claude). No Full Disk Access.
 

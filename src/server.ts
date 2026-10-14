@@ -8,7 +8,7 @@ import type { ArticleSummary } from "./parsers.js";
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "NetNewsWire",
-    version: "0.1.4-ro.2",
+    version: "0.1.4-ro.3",
   });
 
   registerTools(server);
@@ -62,7 +62,7 @@ function registerTools(server: McpServer): void {
         .min(1)
         .max(365)
         .optional()
-        .describe("Only return articles that arrived in NetNewsWire within the last N days"),
+        .describe("Only return articles published within the last N days (arrival date when a feed gives no publication date)"),
       limit: z
         .number()
         .int()
@@ -86,7 +86,7 @@ function registerTools(server: McpServer): void {
       // requested so truncation can be reported instead of hidden.
       const now = new Date();
       const raw = await runAppleScript(
-        scripts.getArticles({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit: limit + 1 }),
+        scripts.getArticles({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit: limit + 1, withText: summaryChars > 0 }),
         { timeoutMs: 300_000 }
       );
       const parsed = parseArticles(raw, now);
