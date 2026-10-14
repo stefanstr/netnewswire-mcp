@@ -98,7 +98,7 @@ export function parseArticles(raw: string, now: Date = new Date()): ArticleSumma
       title: p[1] ?? "",
       url: p[2] ?? "",
       feedUrl: p[3] ?? "",
-      feed: p[4] ?? "",
+      feed: feedDisplayName(p[4] ?? "", p[3] ?? ""),
       read: p[5] === "true",
       starred: p[6] === "true",
       publishedAt: minutesAgoToIso(p[7], now),
@@ -158,14 +158,16 @@ export function parseFullArticle(raw: string, now: Date = new Date()): FullArtic
     title: fields["TITLE"] ?? "",
     url: fields["URL"] ?? "",
     feedUrl: fields["FEEDURL"] ?? "",
-    feed: fields["FEED"] ?? "",
+    feed: feedDisplayName(fields["FEED"] ?? "", fields["FEEDURL"] ?? ""),
     publishedAt: minutesAgoToIso(fields["PUBMIN"], now),
     read: fields["READ"] === "true",
     starred: fields["STARRED"] === "true",
     authors: (fields["AUTHORS"] ?? "").replace(/,\s*$/, ""),
     summary: fields["SUMMARY"] ?? "",
     html: fields["HTML"] ?? "",
-    text: fields["TEXT"] ?? "",
+    // Derived from the HTML: NNW's `contents` property cannot be read
+    // reliably from AppleScript (see scripts.ts).
+    text: fields["TEXT"] || htmlToText(fields["HTML"]),
   };
 }
 
@@ -178,11 +180,13 @@ const ENTITIES: Record<string, string> = {
   nbsp: " ",
 };
 
-/** Strip HTML, decode common entities, collapse whitespace, cap length. */
-export function cleanSummary(input: string | undefined, maxChars: number): string | undefined {
-  if (!input || maxChars <= 0) return undefined;
-  let text = input
+/** Convert HTML to plain text, keeping paragraph breaks. */
+export function htmlToText(input: string | undefined): string {
+  if (!input) return "";
+  return input
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li|blockquote|pre|tr)>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
       if (code[0] === "#") {
@@ -191,11 +195,29 @@ export function cleanSummary(input: string | undefined, maxChars: number): strin
       }
       return ENTITIES[code.toLowerCase()] ?? m;
     })
-    .replace(/\s+/g, " ")
+    .replace(/[ \t\f\v\u00a0]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/** Strip HTML, decode common entities, collapse whitespace, cap length. */
+export function cleanSummary(input: string | undefined, maxChars: number): string | undefined {
+  if (!input || maxChars <= 0) return undefined;
+  let text = htmlToText(input).replace(/\s+/g, " ").trim();
   if (!text) return undefined;
   if (text.length > maxChars) {
     text = text.slice(0, maxChars).replace(/\s+\S*$/, "") + "…";
   }
   return text;
+}
+
+/** Feed name to show; NetNewsWire returns "" when no custom name is set. */
+export function feedDisplayName(name: string, feedUrl: string): string {
+  if (name) return name;
+  try {
+    return new URL(feedUrl).hostname.replace(/^www\./, "");
+  } catch {
+    return feedUrl;
+  }
 }

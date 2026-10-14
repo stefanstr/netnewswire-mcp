@@ -436,10 +436,24 @@ describe("scripts.getArticles bulk fetch (fork)", () => {
     expect(s).not.toContain("repeat with a in");
   });
 
-  it("falls back to contents when the feed has no summary", () => {
+  it("falls back from summary to html to raw contents", () => {
     const s = scripts.getArticles({});
-    expect(s).toContain("set lCont to contents of artRef");
-    expect(s).toContain('if aSum is "" then set aSum to my txt(item i of lCont)');
+    expect(s).toContain("set lHtml to html of artRef");
+    expect(s).toContain("set lText to «class Cnts» of artRef");
+    const iHtml = s.indexOf('if aSum is "" then set aSum to my txt(item i of lHtml)');
+    const iText = s.indexOf('if aSum is "" and lText is not {} then set aSum to my txt(item i of lText)');
+    expect(iHtml).toBeGreaterThan(0);
+    expect(iText).toBeGreaterThan(iHtml);
+  });
+
+  it("never uses the ambiguous `contents of` outside a whose clause", () => {
+    for (const s of [scripts.getArticles({}), scripts.readArticle("x"), scripts.searchArticles("q"), scripts.listFeeds()]) {
+      expect(s).not.toMatch(/\bcontents of\b/);
+    }
+  });
+
+  it("reads plain text in read_article through the raw property code", () => {
+    expect(scripts.readArticle("x")).toContain("set aText to «class Cnts» of a");
   });
 
   it("skips summary and contents entirely when withText is false", () => {

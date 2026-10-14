@@ -223,3 +223,20 @@ describe("sortNewestFirst", () => {
     expect(sorted.map((a) => a.id)).toEqual(["new", "arrived", "old", "none"]);
   });
 });
+
+describe("htmlToText and feedDisplayName (fork)", () => {
+  it("keeps paragraph breaks when converting HTML", async () => {
+    const { htmlToText } = await import("./parsers.js");
+    expect(htmlToText("<p>One&nbsp;two</p><p>Three<br>four</p>")).toBe("One two\nThree\nfour");
+  });
+
+  it("derives text from HTML when read_article has no plain text", () => {
+    const raw = ["TITLE:T", "HTML:<p>Hello</p><p>World</p>", "TEXT:"].join(US);
+    expect(parseFullArticle(raw, NOW).text).toBe("Hello\nWorld");
+  });
+
+  it("uses the feed host when NetNewsWire returns an empty feed name", () => {
+    const raw = rec("ARTICLE:1", "T", "u", "https://www.simonwillison.net/atom/everything/", "", "false", "false", "1", "1", "");
+    expect(parseArticles(raw, NOW)[0]!.feed).toBe("simonwillison.net");
+  });
+});

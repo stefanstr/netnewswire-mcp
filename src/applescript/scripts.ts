@@ -7,6 +7,11 @@
  * - Feed: url, name, homepage url, icon url, favicon url, articles, authors
  * - Folder: name, id, feeds, articles
  * - Article: id, title, url, external url, contents, html, summary,
+ *   (Outside a `whose` clause, `contents of x` collides with AppleScript's
+ *   built-in dereference operator, so this fork reads NNW's property there
+ *   through its raw code `«class Cnts»`, always inside `try`. Inside
+ *   `whose` the term resolves to the article property, as upstream
+ *   verified for search.)
  *            published date, arrived date, read, starred, feed
  * - Author: name, url, avatar url, email address
  *
@@ -162,8 +167,9 @@ end tell`;
    * arrival date alone is unreliable: a re-sync stamps old articles with
    * a fresh arrival date.
    *
-   * When `withText` is set, the summary is taken from `summary`, or from
-   * `contents` when the feed provides no summary (common in NNW).
+   * When `withText` is set, the summary is taken from `summary`, then from
+   * the article HTML, then from the plain-text `contents` («class Cnts»,
+   * populated by some Atom feeds). The server strips any HTML.
    *
    * `limit` is the number of records the script may emit. The server asks
    * for one more than it returns, so it can report truncation.
@@ -191,13 +197,19 @@ end tell`;
     const textFetch = withText
       ? `
             set lSum to summary of artRef
-            set lCont to contents of artRef`
+            set lHtml to html of artRef
+            set lText to {}
+            try
+              set lText to «class Cnts» of artRef
+            end try
+            if (count of lText) is not n then set lText to {}`
       : "";
 
     const textValue = withText
       ? `
                 set aSum to my txt(item i of lSum)
-                if aSum is "" then set aSum to my txt(item i of lCont)
+                if aSum is "" then set aSum to my txt(item i of lHtml)
+                if aSum is "" and lText is not {} then set aSum to my txt(item i of lText)
                 if (length of aSum) > ${SUMMARY_CAP} then set aSum to text 1 thru ${SUMMARY_CAP} of aSum`
       : `
                 set aSum to ""`;
@@ -333,13 +345,14 @@ tell application "NetNewsWire"${PROLOGUE}
             try
               set aHtml to html of a
             end try
-            set aText to ""
-            try
-              set aText to contents of a
-            end try
             set aSummary to ""
             try
               set aSummary to summary of a
+            end try
+            set aText to ""
+            try
+              set aText to «class Cnts» of a
+              if aText is missing value then set aText to ""
             end try
             set aPub to ""
             try
