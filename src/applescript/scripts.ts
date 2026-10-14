@@ -67,9 +67,22 @@ end tell`;
     folderName?: string;
     unreadOnly?: boolean;
     starredOnly?: boolean;
+    sinceDays?: number;
     limit?: number;
   }) => {
     const limit = opts.limit ?? 50;
+    // Date filter (fork addition). Applied inside the loop rather than in
+    // the whose clause, because date comparisons in NetNewsWire's whose
+    // clauses are untested; read/starred stay pushed down to NNW.
+    const sinceDays =
+      opts.sinceDays && opts.sinceDays > 0 ? Math.floor(opts.sinceDays) : 0;
+    const dateOpen = sinceDays
+      ? `
+          set aArrived to arrived date of a
+          if aArrived ≥ cutoffDate then`
+      : "";
+    const dateClose = sinceDays ? `
+          end if` : "";
 
     // Build article filter clause
     const whereClause = opts.unreadOnly
@@ -82,7 +95,7 @@ end tell`;
     const articleBlock = `
         set matchedArticles to (get every article of nthFeed${whereClause})
         repeat with a in matchedArticles
-          if articleCount ≥ maxArticles then exit repeat
+          if articleCount ≥ maxArticles then exit repeat${dateOpen}
           set aId to id of a
           set aTitle to ""
           try
@@ -104,7 +117,7 @@ end tell`;
           set isRead to read of a
           set isStarred to starred of a
           set output to output & "ARTICLE:" & aId & "|" & aTitle & "|" & aUrl & "|" & isRead & "|" & isStarred & "|" & aDate & "|" & aFeed & "|" & aSummary & linefeed
-          set articleCount to articleCount + 1
+          set articleCount to articleCount + 1${dateClose}
         end repeat`;
 
     // Build the feed iteration depending on filters
@@ -143,13 +156,20 @@ ${articleBlock}
   end repeat`;
     }
 
+    const cutoffLine = sinceDays
+      ? `
+  set cutoffDate to (current date) - (${sinceDays} * days)`
+      : "";
+
     return `
 tell application "NetNewsWire"
+  with timeout of 300 seconds
   set output to ""
   set articleCount to 0
-  set maxArticles to ${limit}
+  set maxArticles to ${limit}${cutoffLine}
 ${feedIteration}
   return output
+  end timeout
 end tell`;
   },
 
@@ -235,99 +255,6 @@ tell application "NetNewsWire"
   end timeout
   return "ERROR:Article not found"
 end tell`,
-
-  /**
-   * Mark articles as read/unread or starred/unstarred.
-   *
-   * Performance notes (fixes #2, #4):
-   * - Uses a `whose` clause so NetNewsWire performs the ID filter natively,
-   *   instead of issuing one Apple Event per article across the IPC boundary.
-   * - Early-exits as soon as every requested ID has been matched, so we
-   *   don't keep scanning feeds we no longer need to look at.
-   * - Wraps in `with timeout` so individual Apple Events don't fail with
-   *   a -1712 default-timeout error on large libraries.
-   *
-   * The `whose ... or ...` chain is preferred over `whose id is in {...}`
-   * because NetNewsWire's scripting layer does not implement the `is in`
-   * membership operator for `id` and silently returns no matches.
-   *
-   * Error handling: the per-feed try block exists so a transient glitch on
-   * one feed (e.g. unexpected NNW internal state) doesn't abort an entire
-   * batch. Systemic errors that the user actually needs to act on —
-   * automation permission denied, app quit mid-script, user cancelled,
-   * outer-timeout exceeded — are explicitly re-raised so callers see an
-   * actionable failure instead of a misleading `MARKED:0`.
-   */
-  markArticles: (
-    articleIds: string[],
-    action: "read" | "unread" | "starred" | "unstarred"
-  ) => {
-    const property = action === "read" || action === "unread" ? "read" : "starred";
-    const value = action === "read" || action === "starred" ? "true" : "false";
-    // Build a single predicate evaluated by NetNewsWire (one IPC per feed).
-    const whereClause = articleIds
-      .map((id) => `id is "${escapeForAppleScript(id)}"`)
-      .join(" or ");
-    return `
-tell application "NetNewsWire"
-  set totalIds to ${articleIds.length}
-  set matchCount to 0
-  with timeout of 300 seconds
-    repeat with acct in every account
-      if matchCount ≥ totalIds then exit repeat
-      repeat with nthFeed in allFeeds of acct
-        if matchCount ≥ totalIds then exit repeat
-        try
-          set matched to (every article of nthFeed whose (${whereClause}))
-          repeat with a in matched
-            set ${property} of a to ${value}
-            set matchCount to matchCount + 1
-          end repeat
-        on error errMsg number errNum
-          -- Re-raise systemic errors so the caller sees them instead of
-          -- a misleading MARKED:0. Per-feed transient errors are still
-          -- swallowed so one bad feed doesn't kill an otherwise-working
-          -- batch. Codes:
-          --   -128  user cancelled
-          --   -600  application not running
-          --   -609  connection invalid
-          --   -1712 Apple Event timed out (despite the outer 300s wrapper)
-          --   -1743 not authorized (automation permission denied)
-          if errNum is -128 or errNum is -600 or errNum is -609 or errNum is -1712 or errNum is -1743 then
-            error errMsg number errNum
-          end if
-        end try
-      end repeat
-    end repeat
-  end timeout
-  return "MARKED:" & matchCount
-end tell`;
-  },
-
-  /**
-   * Subscribe to a new feed.
-   */
-  subscribe: (feedUrl: string, folderName?: string) => {
-    if (folderName) {
-      return `
-tell application "NetNewsWire"
-  repeat with acct in every account
-    repeat with fld in every folder of acct
-      if name of fld is "${escapeForAppleScript(folderName)}" then
-        make new feed at fld with properties {url:"${escapeForAppleScript(feedUrl)}"}
-        return "OK"
-      end if
-    end repeat
-  end repeat
-  return "ERROR:Folder not found"
-end tell`;
-    }
-    return `
-tell application "NetNewsWire"
-  make new feed at first account with properties {url:"${escapeForAppleScript(feedUrl)}"}
-  return "OK"
-end tell`;
-  },
 
   /**
    * Search articles by keyword in title and body content.

@@ -132,9 +132,12 @@ async function run() {
 
   const tools = (toolsResult.result as Record<string, unknown>)?.tools as Array<Record<string, string>>;
   const toolNames = tools?.map((t) => t.name) ?? [];
-  const expectedTools = ["list_feeds", "get_articles", "read_article", "mark_articles", "subscribe", "search_articles"];
+  const expectedTools = ["list_feeds", "get_articles", "read_article", "search_articles"];
   for (const name of expectedTools) {
     assert(toolNames.includes(name), `Tool "${name}" is registered`);
+  }
+  for (const name of ["mark_articles", "subscribe"]) {
+    assert(!toolNames.includes(name), `Write tool "${name}" is absent (read-only fork)`);
   }
 
   // ── Test 3: Call list_feeds ─────────────────────────────────────

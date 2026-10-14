@@ -45,7 +45,9 @@ export async function isNetNewsWireRunning(): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync("osascript", [
       "-e",
-      'tell application "System Events" to (name of processes) contains "NetNewsWire"',
+      // Fork change: `application "X" is running` needs no Automation
+      // permission for System Events and does not launch the app.
+      'application "NetNewsWire" is running',
     ], { timeout: 5_000 });
     return stdout.trim() === "true";
   } catch {

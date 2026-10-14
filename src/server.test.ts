@@ -48,12 +48,38 @@ describe("server.ts ↔ scripts.ts timeout alignment", () => {
     expect(block).toContain("timeoutMs: 300_000");
   });
 
-  it("mark_articles calls runAppleScript with timeoutMs: 300_000", () => {
-    // Positive control: this one's been correctly aligned since the
-    // markArticles fix (834f662). If this assertion ever fails, the
-    // markArticles callsite has regressed.
-    const block = callsiteFor("mark_articles");
-    expect(block).toContain("scripts.markArticles(");
+  it("get_articles calls runAppleScript with timeoutMs: 300_000", () => {
+    const block = callsiteFor("get_articles");
+    expect(block).toContain("scripts.getArticles(");
     expect(block).toContain("timeoutMs: 300_000");
+  });
+});
+
+describe("read-only fork", () => {
+  const serverSrc = readFileSync(
+    fileURLToPath(new URL("./server.ts", import.meta.url)),
+    "utf8"
+  );
+  const scriptsSrc = readFileSync(
+    fileURLToPath(new URL("./applescript/scripts.ts", import.meta.url)),
+    "utf8"
+  );
+  const bridgeSrc = readFileSync(
+    fileURLToPath(new URL("./applescript/bridge.ts", import.meta.url)),
+    "utf8"
+  );
+
+  it("registers no write tools", () => {
+    expect(serverSrc).not.toContain('"mark_articles"');
+    expect(serverSrc).not.toContain('"subscribe"');
+  });
+
+  it("generates no AppleScript that writes to NetNewsWire", () => {
+    expect(scriptsSrc).not.toMatch(/set (read|starred) of/);
+    expect(scriptsSrc).not.toContain("make new feed");
+  });
+
+  it("does not need System Events", () => {
+    expect(bridgeSrc).not.toContain('tell application "System Events"');
   });
 });

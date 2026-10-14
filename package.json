@@ -1,11 +1,8 @@
 {
-  "name": "@jellllly/netnewswire-mcp",
-  "version": "0.1.4",
-  "description": "MCP server for NetNewsWire — interact with your RSS feeds from Claude",
+  "name": "netnewswire-mcp-readonly",
+  "version": "0.1.4-ro.1",
+  "description": "Read-only fork of the NetNewsWire MCP server",
   "type": "module",
-  "bin": {
-    "netnewswire-mcp": "dist/index.js"
-  },
   "main": "dist/index.js",
   "files": [
     "dist"
@@ -15,8 +12,7 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "eslint src/",
-    "test": "vitest run",
-    "prepublishOnly": "npm run build"
+    "test": "vitest run"
   },
   "keywords": [
     "mcp",
@@ -27,7 +23,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/jellllly420/netnewswire-mcp"
+    "url": "https://github.com/stefanstr/netnewswire-mcp"
   },
   "license": "MIT",
   "engines": {
@@ -43,5 +39,6 @@
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0",
     "vitest": "^3.0.0"
-  }
+  },
+  "private": true
 }

@@ -7,7 +7,7 @@ import { parseListFeeds, parseArticles, parseFullArticle } from "./parsers.js";
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "NetNewsWire",
-    version: "0.1.4",
+    version: "0.1.4-ro.1",
   });
 
   registerTools(server);
@@ -54,17 +54,28 @@ function registerTools(server: McpServer): void {
         .boolean()
         .default(false)
         .describe("Only return starred articles"),
+      sinceDays: z
+        .number()
+        .int()
+        .min(1)
+        .max(365)
+        .optional()
+        .describe("Only return articles that arrived in NetNewsWire within the last N days"),
       limit: z
         .number()
         .min(1)
-        .max(200)
+        .max(500)
         .default(50)
-        .describe("Maximum number of articles to return (default 50)"),
+        .describe("Maximum number of articles to return (default 50, max 500)"),
     },
-    async ({ feedUrl, folderName, unreadOnly, starredOnly, limit }) => {
+    async ({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit }) => {
       await ensureRunning();
+      // Sweeping every feed of a large library can exceed the bridge's 60s
+      // default; scripts.getArticles wraps its work in `with timeout of 300
+      // seconds`, so the subprocess budget must match (fork change).
       const raw = await runAppleScript(
-        scripts.getArticles({ feedUrl, folderName, unreadOnly, starredOnly, limit })
+        scripts.getArticles({ feedUrl, folderName, unreadOnly, starredOnly, sinceDays, limit }),
+        { timeoutMs: 300_000 }
       );
       const articles = parseArticles(raw);
       return {
@@ -107,71 +118,6 @@ function registerTools(server: McpServer): void {
       }
       const article = parseFullArticle(raw);
       return { content: [{ type: "text", text: JSON.stringify(article, null, 2) }] };
-    }
-  );
-
-  // ── mark_articles ───────────────────────────────────────────────
-  server.tool(
-    "mark_articles",
-    "Mark one or more articles as read, unread, starred, or unstarred. " +
-      "Prefer batching IDs into a single call (e.g. 50–200 per call) over many " +
-      "single-article calls — each call still has to scan feeds, so one batched " +
-      "call is dramatically cheaper than many sequential ones.",
-    {
-      articleIds: z
-        .array(z.string())
-        .min(1)
-        .max(200)
-        .describe(
-          "Array of article IDs to update (max 200 per call; for larger sets, split into multiple calls)"
-        ),
-      action: z
-        .enum(["read", "unread", "starred", "unstarred"])
-        .describe("Action to perform"),
-    },
-    async ({ articleIds, action }) => {
-      await ensureRunning();
-      // Write operations on large libraries can take longer than the default
-      // 60s subprocess timeout. The AppleScript itself caps individual Apple
-      // Events at 300s via `with timeout`, so match that here.
-      const raw = await runAppleScript(
-        scripts.markArticles(articleIds, action),
-        { timeoutMs: 300_000 }
-      );
-      const count = raw.match(/MARKED:(\d+)/)?.[1] ?? "0";
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Marked ${count} article(s) as ${action}.`,
-          },
-        ],
-      };
-    }
-  );
-
-  // ── subscribe ───────────────────────────────────────────────────
-  server.tool(
-    "subscribe",
-    "Subscribe to a new RSS/Atom feed in NetNewsWire.",
-    {
-      feedUrl: z.string().url().describe("The feed URL to subscribe to"),
-      folderName: z
-        .string()
-        .optional()
-        .describe("Folder to add the feed to (optional)"),
-    },
-    async ({ feedUrl, folderName }) => {
-      await ensureRunning();
-      await runAppleScript(scripts.subscribe(feedUrl, folderName));
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Subscribed to ${feedUrl}${folderName ? ` in folder "${folderName}"` : ""}.`,
-          },
-        ],
-      };
     }
   );
 
