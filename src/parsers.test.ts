@@ -240,3 +240,10 @@ describe("htmlToText and feedDisplayName (fork)", () => {
     expect(parseArticles(raw, NOW)[0]!.feed).toBe("simonwillison.net");
   });
 });
+
+describe("named entities (fork)", () => {
+  it("decodes typographic quotes and dashes", async () => {
+    const { htmlToText } = await import("./parsers.js");
+    expect(htmlToText("It&rsquo;s &ldquo;fine&rdquo; &ndash; really&hellip;")).toBe("It\u2019s \u201cfine\u201d \u2013 really\u2026");
+  });
+});

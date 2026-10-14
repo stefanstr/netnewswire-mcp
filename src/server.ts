@@ -8,7 +8,7 @@ import type { ArticleSummary } from "./parsers.js";
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "NetNewsWire",
-    version: "0.1.4-ro.4",
+    version: "0.1.4-ro.5",
   });
 
   registerTools(server);

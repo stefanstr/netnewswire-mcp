@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "netnewswire-mcp-readonly",
   "display_name": "NetNewsWire (tylko odczyt)",
-  "version": "0.1.4-ro.4",
+  "version": "0.1.4-ro.5",
   "description": "Read-only fork: browse, fetch and search your NetNewsWire articles from Claude. No write tools.",
   "long_description": "Read-only fork of jellllly420/netnewswire-mcp by stefanstr. Connects Claude to NetNewsWire via AppleScript on macOS. The mark_articles and subscribe tools are removed, get_articles gains a sinceDays filter and a 300 s timeout, and the running check no longer needs System Events.",
   "author": {
